@@ -131,10 +131,8 @@ public struct S3MultiFileUploadQueue: Sendable {
     }
     
     func uploadMultipart<Data: S3UploadAble & Sendable>(data: Data, objectName: String, contentType: String = "application/octet-stream", lastModified: Timestamp) async {
-        let client = client
         let url = endpoint.uploadURL(remotePath: objectName)
-        let executor = partUploadExecutor
-        await enqueuePreparation {
+        await enqueuePreparation { [client, executor = partUploadExecutor] in
             try await S3Uploader.uploadMultipart(client: client, data: data, url: url, contentType: contentType, lastModified: lastModified, executor: executor)
         }
     }
