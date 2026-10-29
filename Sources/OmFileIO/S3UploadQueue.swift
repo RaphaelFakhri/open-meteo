@@ -179,8 +179,10 @@ public struct S3MultiFileUploadQueue: Sendable {
     }
 
     func finishPreparations() async -> [S3MultiPartUploadPrepared] {
-        await queue.finish()
-        return await preparations.value
+        queue.finish()
+        let prepared = await preparations.value
+        await queue.waitForCompletion()
+        return prepared
     }
 
 }
