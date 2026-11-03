@@ -94,13 +94,13 @@ public struct OmFileSystemS3: Sendable {
             case none
             
             /// Payload is currently initialising. Consecutive requets are queued
-            case initialising([CheckedContinuation<any OmRemotePayload, Error>])
+            case initialising(PayloadWaiters)
             
             /// Payload got initialised and should be in sync with remote server
             case ready(any OmRemotePayload)
             
             /// The S3 directory listing detected a modification or a HTTP request threw a file modified error. Start reloading the new payload, but keep the old payload
-            case updating(old: any OmRemotePayload, [CheckedContinuation<any OmRemotePayload, Error>])
+            case updating(old: any OmRemotePayload, PayloadWaiters)
             
             /// Received HTTP file not found error, while the directory did not yet update. Returns nil if payload is requested
             case deleted
@@ -108,6 +108,28 @@ public struct OmFileSystemS3: Sendable {
             /// An error occurred while initialising the payload. This could also contains unrecoverable network errors, corrupted file errors, file not found, modified errors and others.
             /// Errors are cleared every minute
             case error(Error, Timestamp)
+        }
+
+        /// One completion per initialization or replacement, accessed only on this file actor.
+        /// Waiters retain the completion, not a snapshot of the file's mutable state.
+        private final class PayloadWaiters {
+            private var result: Result<any OmRemotePayload, Error>?
+            private var continuations: [CheckedContinuation<any OmRemotePayload, Error>] = []
+
+            func append(_ continuation: CheckedContinuation<any OmRemotePayload, Error>) {
+                if let result {
+                    continuation.resume(with: result)
+                } else {
+                    continuations.append(continuation)
+                }
+            }
+
+            func finish(_ result: Result<any OmRemotePayload, Error>) {
+                self.result = result
+                let queued = continuations
+                continuations.removeAll()
+                for continuation in queued { continuation.resume(with: result) }
+            }
         }
 
         /// Cancellation and stale remote metadata are not terminal payload
@@ -160,7 +182,7 @@ public struct OmFileSystemS3: Sendable {
             self.eTag = eTag
             switch payload {
             case .ready(let old):
-                payload = .updating(old: old, [])
+                payload = .updating(old: old, PayloadWaiters())
                 do {
                     let file = makeCachedClient(context: context)
                     // Shared metadata must finish even if the initiating preload stops.
@@ -171,9 +193,7 @@ public struct OmFileSystemS3: Sendable {
                         fatalError("State was not .updating()")
                     }
                     self.payload = .ready(new)
-                    queued.forEach {
-                        $0.resume(with: .success(new))
-                    }
+                    queued.finish(.success(new))
                     await new.remotePublished()
                 } catch {
                     guard case .updating(_, let queued) = payload else {
@@ -184,9 +204,7 @@ public struct OmFileSystemS3: Sendable {
                     } else {
                         self.payload = .error(error, .now())
                     }
-                    queued.forEach({
-                        $0.resume(throwing: error)
-                    })
+                    queued.finish(.failure(error))
                 }
             case .error(_, _), .deleted:
                 /// Old payload had an error. Just reset state
@@ -219,7 +237,7 @@ public struct OmFileSystemS3: Sendable {
             }
             switch payload {
             case .none:
-                self.payload = .initialising([])
+                self.payload = .initialising(PayloadWaiters())
                 do {
                     // The payload and its queued callers outlive any initiating preload.
                     let p: T = try await RemotePreloadSession.$current.withValue(nil) {
@@ -239,9 +257,7 @@ public struct OmFileSystemS3: Sendable {
                         fatalError("State was not .initialising()")
                     }
                     self.payload = .ready(p)
-                    queued.forEach {
-                        $0.resume(with: .success(p))
-                    }
+                    queued.finish(.success(p))
                     return p
                 } catch {
                     guard case .initialising(let queued) = payload else {
@@ -253,16 +269,14 @@ public struct OmFileSystemS3: Sendable {
                     } else {
                         self.payload = .error(error, .now())
                     }
-                    queued.forEach({
-                        $0.resume(throwing: error)
-                    })
+                    queued.finish(.failure(error))
                     throw error
                 }
             case .initialising(let queue):
                 OmFileSystemMetrics.fileRemotePayloadWaiting.add(1, ordering: .relaxed)
                 defer { OmFileSystemMetrics.fileRemotePayloadWaiting.add(-1, ordering: .relaxed) }
-                return try await withCheckedThrowingContinuation(isolation: self) { continuation in
-                    payload = .initialising(queue + [continuation])
+                return try await withCheckedThrowingContinuation { continuation in
+                    queue.append(continuation)
                 } as? T
             case .updating(let old, let queue):
                 // If the file is actively being updated, allow access to the old file, because cached responses still work
@@ -270,8 +284,8 @@ public struct OmFileSystemS3: Sendable {
                     // If the access fails, enqueue to get the new file
                     OmFileSystemMetrics.fileRemotePayloadUpdateWaiting.add(1, ordering: .relaxed)
                     defer { OmFileSystemMetrics.fileRemotePayloadUpdateWaiting.add(-1, ordering: .relaxed) }
-                    let payload = try await withCheckedThrowingContinuation(isolation: self) { continuation in
-                        self.payload = .updating(old: old, queue + [continuation])
+                    let payload = try await withCheckedThrowingContinuation { continuation in
+                        queue.append(continuation)
                     }
                     guard let payload = payload as? T else {
                         fatalError("Payload was not of correct type \(T.self)")
@@ -291,7 +305,7 @@ public struct OmFileSystemS3: Sendable {
                 }
                 // Old file got modified, we have to download it from the remote server again
                 // At this stage there could be dozens of failing calls coming in
-                self.payload = .updating(old: payload, [])
+                self.payload = .updating(old: payload, PayloadWaiters())
                 do {
                     let new = try await RemotePreloadSession.$current.withValue(nil) {
                         let newReader = try await OmHttpReaderBackend(context: context, object: objectName)
@@ -304,9 +318,7 @@ public struct OmFileSystemS3: Sendable {
                         fatalError("State was not .updating()")
                     }
                     self.payload = .ready(new)
-                    queued.forEach({
-                        $0.resume(returning: new)
-                    })
+                    queued.finish(.success(new))
                     await new.remotePublished()
                     return new
                 } catch {
@@ -318,9 +330,7 @@ public struct OmFileSystemS3: Sendable {
                     } else {
                         self.payload = .error(error, .now())
                     }
-                    queued.forEach({
-                        $0.resume(throwing: error)
-                    })
+                    queued.finish(.failure(error))
                     throw error
                 }
             case .deleted:
