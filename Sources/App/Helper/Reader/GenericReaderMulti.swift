@@ -36,12 +36,16 @@ struct GenericReaderMulti<Variable: GenericVariableMixable>: GenericReaderOption
     }
 
     func prefetchData(variable: Variable, time: TimerangeDtAndSettings) async throws -> Bool {
+        var prefetched = false
         for reader in reader.reversed() {
             if try await reader.prefetchData(mixed: variable.rawValue, time: time) {
-                return true
+                prefetched = true
+                // Acceptance does not guarantee coverage
+                // remote fallbacks always need to be prewarmed to avoid endless tail-latency
+                if ReaderPrefetchPolicy.current != .remoteOnly { break }
             }
         }
-        return false
+        return prefetched
     }
 
     func get(variable: Variable, time: TimerangeDtAndSettings) async throws -> DataAndUnit? {
@@ -120,7 +124,7 @@ struct GenericReaderMultiSameType<Variable: GenericVariableMixable>: GenericRead
         for reader in reader.reversed() {
             let accepted = try await reader.prefetchData(variable: variable, time: time)
             prefetched = prefetched || accepted
-            if accepted && !prefetchAllReaders {
+            if accepted && !prefetchAllReaders && ReaderPrefetchPolicy.current != .remoteOnly {
                 break
             }
         }
