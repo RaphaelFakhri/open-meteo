@@ -261,7 +261,7 @@ public struct OmFileSystemS3: Sendable {
             case .initialising(let queue):
                 OmFileSystemMetrics.fileRemotePayloadWaiting.add(1, ordering: .relaxed)
                 defer { OmFileSystemMetrics.fileRemotePayloadWaiting.add(-1, ordering: .relaxed) }
-                return try await withCheckedThrowingContinuation { continuation in
+                return try await withCheckedThrowingContinuation(isolation: self) { continuation in
                     payload = .initialising(queue + [continuation])
                 } as? T
             case .updating(let old, let queue):
@@ -270,7 +270,7 @@ public struct OmFileSystemS3: Sendable {
                     // If the access fails, enqueue to get the new file
                     OmFileSystemMetrics.fileRemotePayloadUpdateWaiting.add(1, ordering: .relaxed)
                     defer { OmFileSystemMetrics.fileRemotePayloadUpdateWaiting.add(-1, ordering: .relaxed) }
-                    let payload = try await withCheckedThrowingContinuation { continuation in
+                    let payload = try await withCheckedThrowingContinuation(isolation: self) { continuation in
                         self.payload = .updating(old: old, queue + [continuation])
                     }
                     guard let payload = payload as? T else {
