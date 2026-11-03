@@ -1,8 +1,9 @@
 import OmFileIO
 
 /// Keep normal paging separate from early remote block-cache warming.
-/// Applied at the resolved file reader so derived variables and local fallbacks
-/// follow the same policy as directly requested variables.
+/// Local-only prefetch skips remote lookup before initializing file payloads.
+/// The resolved reader also filters payload prefetch, including local fallbacks
+/// reached by remote-only jobs.
 enum ReaderPrefetchPolicy: Sendable {
     case all
     case remoteOnly

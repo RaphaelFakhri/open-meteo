@@ -1,6 +1,9 @@
 import Foundation
 
-/// Cache hits stay lock-free. Misses share a download across overlapping ranges.
+/**
+ Coordinate concurrent requests for the same cache key. The atomic block cache is accessed in parallel.
+ Requests are only isolated if they need to be fetched from the backend
+ */
 public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
     typealias Key = UInt64
     public nonisolated let cache: AtomicBlockCache<Backend>
@@ -22,16 +25,22 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
         self.cache = cache
     }
 
+    /**
+     Fetch a range of keys. If consecutive keys are missing, fetch them in one call from the backend
+     E.g. Two 64kb HTTP requests can be combined into a single 128kb request
+     */
     nonisolated func get<T: ContiguousBytes & Sendable>(
         key keyStart: Key,
         count: Int,
         provider: @escaping @Sendable (_ key: Key, _ count: Int) async throws -> T,
-        dataCallback: @Sendable (Key, UnsafeRawBufferPointer) -> Void
+        dataCallback: @Sendable (Key, UnsafeRawBufferPointer) -> ()
     ) async throws {
+        /// Check if blocks are already cached
         for i in 0..<count {
             try Task.checkCancellation()
             let key = keyStart &+ UInt64(i)
             guard let value = cache.get(key: key, count: 1) else {
+                /// Use actor isolation to ensure data is only fetched once for a given key
                 try await getIsolated(key: key, count: count - i, provider: provider, dataCallback: dataCallback)
                 return
             }
@@ -43,8 +52,12 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
         key keyStart: Key,
         count: Int,
         provider: @escaping @Sendable (Key, Int) async throws -> T,
-        dataCallback: @Sendable (Key, UnsafeRawBufferPointer) -> Void
+        dataCallback: @Sendable (Key, UnsafeRawBufferPointer) -> ()
     ) async throws {
+        /// Loop over keys, check:
+        /// 1. if they are cached
+        /// 2. if they are being fetched by another thread already
+        /// 3. need to be fetched from backend
         var i = 0
         while i < count {
             try RemotePreloadSession.current?.checkActive()

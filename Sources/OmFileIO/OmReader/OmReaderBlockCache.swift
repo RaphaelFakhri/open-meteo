@@ -246,10 +246,10 @@ public final class OmReaderBlockCache<Backend: OmFileReaderBackend, Cache: Atomi
                              superBlockLength: superBlockLength, chunkLength: max(1, 1024 * 1024 / cache.cache.blockSize))
     }
 
-    /// Load hot ranges from a replacement file without paging or decoding payloads.
+    /// Load list of blocks into cache. This is used to prefetch data after rotating files.
     public func preloadBlocks(blocks: [Range<Int>]) async throws {
         let blockSize = cache.cache.blockSize
-        let totalCount = backend.count
+        let totalCount = self.backend.count
         for blocks in preloadChunks(blocks: blocks) {
             try Task.checkCancellation()
             try RemotePreloadSession.current?.checkActive()
@@ -278,6 +278,8 @@ public struct OmPreloadBlockChunks: Sequence, Sendable {
 
         public mutating func next() -> Range<Int>? {
             while index < chunks.ranges.count {
+                /// The list of blocks is from an older file revision.
+                /// The new file could be smaller and contain fewer blocks.
                 let range = chunks.ranges[index].clamped(to: 0..<chunks.blockCount)
                 let lower = lowerBound ?? range.lowerBound
                 guard lower < range.upperBound else {
@@ -285,6 +287,7 @@ public struct OmPreloadBlockChunks: Sequence, Sendable {
                     lowerBound = nil
                     continue
                 }
+                // Cache keys are only consecutive within a super block.
                 let upper = Swift.min(range.upperBound, (lower / chunks.superBlockLength + 1) * chunks.superBlockLength,
                                 lower + chunks.chunkLength)
                 lowerBound = upper

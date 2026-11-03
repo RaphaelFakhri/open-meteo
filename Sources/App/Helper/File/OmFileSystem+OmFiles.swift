@@ -49,7 +49,7 @@ extension OmFileLocalRemoteOmReader: OmFilePayload {
         let warmer = file.backend.server.preloadExecutor
         let id = await warmer.stage(key: file.backend.object, jobs: file.preloadChunks(blocks: activeBlocks)) { blocks in
             do {
-                // Old block positions are only a hint; changes to compression can move data.
+                // Relative block positions are an estimate when the replacement file's internal layout changes.
                 try await file.preloadBlocks(blocks: [blocks])
             } catch is CancellationError {
                 return
@@ -60,7 +60,7 @@ extension OmFileLocalRemoteOmReader: OmFilePayload {
         }
         updated.warmup = (warmer, id)
         let deletedBlocks = reader.fn.deleteCachedBlocks(olderThanSeconds: 60)
-        logger.debug("Updated \(file.backend.object), freed \(deletedBlocks) blocks; cache warming queued")
+        logger.warning("OmFileRemoteOmReader: Blocks freed=\(deletedBlocks) queuedForPreload=\(activeBlocks.reduce(0) { $0 + $1.count }) ranges=\(activeBlocks.count). Updated file \(file.backend.object) (old size=\(reader.fn.count) new size=\(file.count)). ")
         return updated
     }
 

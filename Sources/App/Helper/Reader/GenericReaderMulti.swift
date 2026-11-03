@@ -40,8 +40,7 @@ struct GenericReaderMulti<Variable: GenericVariableMixable>: GenericReaderOption
         for reader in reader.reversed() {
             if try await reader.prefetchData(mixed: variable.rawValue, time: time) {
                 prefetched = true
-                // Acceptance does not guarantee coverage
-                // remote fallbacks always need to be prewarmed to avoid endless tail-latency
+                // Prewarm remote fallbacks to reduce tail latency because acceptance does not guarantee coverage.
                 if ReaderPrefetchPolicy.current != .remoteOnly { break }
             }
         }

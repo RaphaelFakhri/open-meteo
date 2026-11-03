@@ -163,7 +163,7 @@ public extension HTTPClient {
                         request.setBasicAuth(username: String(user), password: String(password))
                     }
                 }
-
+                
                 let response = try await execute(request, timeout: timeoutPerRequest, logger: logger)
                 logger.debug("Response for HTTP request #\(n) returned HTTP status code: \(response.status). URL \(request.url)\(request.headers.rangePrettyPrint)")
                 //print(try await response.readStringImmutable())

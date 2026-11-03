@@ -68,6 +68,7 @@ struct OmFileSplitter {
 
     /// Prefetch all required data into memory
     func willNeed(variable: String, location: Range<Int>, level: Int, time: TimerangeDtAndSettings, run: IsoDateTime? = nil) async throws {
+        // TODO: maybe we can keep the file handles better in scope
         // Skip remote lookup and metadata initialization during the local prefetch pass.
         let localOnly = ReaderPrefetchPolicy.current == .localOnly
         let indexTime = time.time.toIndexTime()

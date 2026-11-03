@@ -5,9 +5,10 @@ import Synchronization
 public final class RemotePreloadSession: Sendable {
     private let stopped = Mutex(false)
     public init() {}
+    public var isStopped: Bool { stopped.withLock { $0 } }
     public func stop() { stopped.withLock { $0 = true } }
     public func checkActive() throws {
-        if stopped.withLock({ $0 }) { throw CancellationError() }
+        if isStopped { throw CancellationError() }
     }
     @TaskLocal public static var current: RemotePreloadSession?
 }
@@ -63,7 +64,7 @@ public actor RemotePreloadExecutor {
     public var snapshot: Snapshot {
         Snapshot(activeRequests: active - activeWarmups, activeWarmups: activeWarmups,
                  queuedRequests: requests.filter { $0.next < $0.count }.count,
-                 queuedWarmups: warmups.filter { !$0.active && (try? $0.session.checkActive()) != nil }.count,
+                 queuedWarmups: warmups.filter { !$0.active && !$0.session.isStopped }.count,
                  stoppedRequests: stoppedRequests, stoppedWarmups: stoppedWarmups)
     }
 
@@ -93,10 +94,10 @@ public actor RemotePreloadExecutor {
 
     public func cancel(key: String) {
         for work in warmups where work.key == key {
-            if (try? work.session.checkActive()) != nil { stoppedWarmups += 1 }
+            if !work.session.isStopped { stoppedWarmups += 1 }
             work.session.stop()
         }
-        warmups.removeAll { !$0.active && (try? $0.session.checkActive()) == nil }
+        warmups.removeAll { !$0.active && $0.session.isStopped }
     }
 
     public func shutdown() async {
@@ -147,14 +148,14 @@ public actor RemotePreloadExecutor {
     private func drain() {
         // Retain stopped requests until active I/O finishes.
         for index in requests.indices.reversed() {
-            if (try? requests[index].session.checkActive()) == nil {
+            if requests[index].session.isStopped {
                 requests[index].next = requests[index].count
             }
             if requests[index].next == requests[index].count && requests[index].active == 0 {
                 requests.remove(at: index).completion.resume()
             }
         }
-        warmups.removeAll { !$0.active && (try? $0.session.checkActive()) == nil }
+        warmups.removeAll { !$0.active && $0.session.isStopped }
         guard !stopped else { return }
         while active < concurrency,
               let index = requests.firstIndex(where: { $0.next < $0.count && $0.active < $0.concurrency }) {
@@ -170,7 +171,7 @@ public actor RemotePreloadExecutor {
             let task = UUID()
             tasks[task] = Task {
                 await RemotePreloadSession.$current.withValue(session) {
-                    if (try? session.checkActive()) != nil { await operation(job) }
+                    if !session.isStopped { await operation(job) }
                 }
                 completed(id, task: task)
             }
@@ -189,7 +190,7 @@ public actor RemotePreloadExecutor {
             let task = UUID()
             tasks[task] = Task {
                 await RemotePreloadSession.$current.withValue(session) {
-                    if (try? session.checkActive()) != nil { await operation() }
+                    if !session.isStopped { await operation() }
                 }
                 tasks.removeValue(forKey: task)
                 active -= 1

@@ -2,7 +2,8 @@ import AsyncHTTPClient
 import OmFileIO
 import Vapor
 
-/// Configures remote downloads and shuts down monitoring, cache warming, and the shared data pool.
+/// Stops remote health monitoring and shuts down the shared data request pool.
+/// Also stops preload jobs and rotation warming before shutting down the pool.
 struct RemoteDataHttpClientLifecycle: LifecycleHandler {
     static func positiveLimit(_ name: String, default value: Int) -> Int {
         guard let limit = Int(Environment.get(name) ?? String(value)), limit > 0 else {
