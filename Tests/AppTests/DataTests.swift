@@ -271,7 +271,6 @@ extension InlineArray {
         .disabled("Elevation information unavailable")
     )
     func elevationMatching() async throws {
-        let logger = Logger(label: "testElevationMatching")
         let client = HTTPClient.shared
         let optimised = try await IconDomains.iconD2.grid.findPointTerrainOptimised(lat: 46.88, lon: 8.67, elevation: 650, elevationFile: IconDomains.iconD2.getStaticFile(type: .elevation)!)!
         #expect(optimised.gridpoint == 225405)
