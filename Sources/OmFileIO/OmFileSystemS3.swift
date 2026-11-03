@@ -61,6 +61,7 @@ public struct OmFileSystemS3: Sendable {
                 guard let payload = try await file.getPayload(ofType: Payload.self, context: context, receivedFileModifiedError: false) else {
                     return nil
                 }
+                try RemotePreloadSession.current?.checkActive()
                 return try await fn(payload)
             } catch CurlError.fileNotFound {
                 await file.receivedObjectDeletedError()
@@ -70,6 +71,7 @@ public struct OmFileSystemS3: Sendable {
                     return nil
                 }
                 /// Catch error again? If there would a file modified error again, this could indicate some remote server issues
+                try RemotePreloadSession.current?.checkActive()
                 return try await fn(payload)
             }
         }
@@ -161,7 +163,10 @@ public struct OmFileSystemS3: Sendable {
                 payload = .updating(old: old, [])
                 do {
                     let file = makeCachedClient(context: context)
-                    let new = try await old.remoteUpdated(file: file)
+                    // Shared metadata must finish even if the initiating preload stops.
+                    let new = try await RemotePreloadSession.$current.withValue(nil) {
+                        try await old.remoteUpdated(file: file)
+                    }
                     guard case .updating(_, let queued) = payload else {
                         fatalError("State was not .updating()")
                     }
@@ -216,17 +221,19 @@ public struct OmFileSystemS3: Sendable {
             case .none:
                 self.payload = .initialising([])
                 do {
-                    let p: T
-                    if receivedFileModifiedError {
-                        // File modified errors can happen if the S3 listing is already outdated the first time the file is retrieved
-                        let newReader = try await OmHttpReaderBackend(context: context, object: objectName)
-                        context.logger.warning("Initial s3 file open but received file modified error for \(objectName) [Old size: \(self.contentLength), new size: \(newReader.count), old etag: \(self.eTag), new etag: \(newReader.eTag), old lastModified: \(self.lastModified.iso8601_YYYY_MM_dd_HH_mm_ss), new lastModified: \(newReader.lastModified.iso8601_YYYY_MM_dd_HH_mm_ss), delta: \(Double(newReader.lastModified.timeIntervalSince1970 - lastModified.timeIntervalSince1970).asSecondsPrettyPrint)]")
-                        self.contentLength = newReader.count
-                        self.lastModified = newReader.lastModified
-                        self.eTag = newReader.eTag
-                        p = try await T(file: newReader)
-                    } else {
-                        p = try await T(file: makeCachedClient(context: context))
+                    // The payload and its queued callers outlive any initiating preload.
+                    let p: T = try await RemotePreloadSession.$current.withValue(nil) {
+                        if receivedFileModifiedError {
+                            // File modified errors can happen if the S3 listing is already outdated the first time the file is retrieved
+                            let newReader = try await OmHttpReaderBackend(context: context, object: objectName)
+                            context.logger.warning("Initial s3 file open but received file modified error for \(objectName) [Old size: \(self.contentLength), new size: \(newReader.count), old etag: \(self.eTag), new etag: \(newReader.eTag), old lastModified: \(self.lastModified.iso8601_YYYY_MM_dd_HH_mm_ss), new lastModified: \(newReader.lastModified.iso8601_YYYY_MM_dd_HH_mm_ss), delta: \(Double(newReader.lastModified.timeIntervalSince1970 - lastModified.timeIntervalSince1970).asSecondsPrettyPrint)]")
+                            self.contentLength = newReader.count
+                            self.lastModified = newReader.lastModified
+                            self.eTag = newReader.eTag
+                            return try await T(file: newReader)
+                        } else {
+                            return try await T(file: makeCachedClient(context: context))
+                        }
                     }
                     guard case .initialising(let queued) = payload else {
                         fatalError("State was not .initialising()")
@@ -286,11 +293,13 @@ public struct OmFileSystemS3: Sendable {
                 // At this stage there could be dozens of failing calls coming in
                 self.payload = .updating(old: payload, [])
                 do {
-                    let newReader = try await OmHttpReaderBackend(context: context, object: objectName)
-                    self.contentLength = newReader.count
-                    self.lastModified = newReader.lastModified
-                    self.eTag = newReader.eTag
-                    let new = try await payload.remoteUpdated(file: newReader)
+                    let new = try await RemotePreloadSession.$current.withValue(nil) {
+                        let newReader = try await OmHttpReaderBackend(context: context, object: objectName)
+                        self.contentLength = newReader.count
+                        self.lastModified = newReader.lastModified
+                        self.eTag = newReader.eTag
+                        return try await payload.remoteUpdated(file: newReader)
+                    }
                     guard case .updating(old: _, let queued) = self.payload else {
                         fatalError("State was not .updating()")
                     }
