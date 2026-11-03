@@ -260,10 +260,19 @@ struct ForecastapiResult<Model: ModelFlatbufferSerialisable>: ForecastapiRespond
     /// Output the given result set with a specified format
     /// timestamp and fixedGenerationTime are used to overwrite dynamic fields in unit tests
     func response(format: ForecastResultFormatWithOptions?, concurrencySlot: Int? = nil, prefetch: Bool = true, logger: Logger) async throws -> Response {
+        try await response(
+            format: format, 
+            concurrencySlot: concurrencySlot, 
+            prefetch: prefetch, 
+            logger: logger,
+            remoteEnabled: OpenMeteo.remoteDataDirectory != nil
+        )
+    }
+
+    func response(format: ForecastResultFormatWithOptions?, concurrencySlot: Int? = nil, prefetch: Bool = true, logger: Logger, remoteEnabled: Bool) async throws -> Response {
         if case .xlsx = format, results.count > 100 {
             throw ForecastApiError.generic(message: "XLSX supports only up to 100 locations")
         }
-        let remoteEnabled = OpenMeteo.remoteDataDirectory != nil
         var output = self
         if remoteEnabled {
             output.preload = ReaderPreload {
