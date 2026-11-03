@@ -68,7 +68,7 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
                 fetch = Fetch(key: key, count: length)
                 for offset in 0..<length { pending[key &+ UInt64(offset)] = fetch }
                 // The download belongs to all waiters, not to the task that first missed the cache.
-                fetch.task = Task {
+                fetch.task = Task { [length] in
                     let result: Result<Data, Error>
                     do {
                         let bytes = try await provider(key, length)
@@ -85,15 +85,7 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
             }
             let waiter = UUID()
             let data = try await withTaskCancellationHandler {
-                // Swift 6.3 does not infer this actor through the cancellation-handler closure.
-                // Keep waiter registration isolated with finish and cancel.
-                return try await withCheckedThrowingContinuation(isolation: self) { continuation in
-                    if let result = fetch.result {
-                        continuation.resume(with: result)
-                    } else {
-                        fetch.waiters[waiter] = continuation
-                    }
-                }
+                try await wait(for: fetch, waiter: waiter, key: key)
             } onCancel: {
                 Task { await self.cancel(waiter: waiter, key: key) }
             }
@@ -108,6 +100,19 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
                 }
             }
             i += available
+        }
+    }
+
+    /// Keep registration actor-isolated on Swift 6.3 as well as newer toolchains.
+    private func wait(for fetch: Fetch, waiter: UUID, key: Key) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            if let result = fetch.result {
+                continuation.resume(with: result)
+            } else {
+                fetch.waiters[waiter] = continuation
+                // Cancellation can arrive before this actor-isolated method is entered.
+                if Task.isCancelled { cancel(waiter: waiter, key: key) }
+            }
         }
     }
 
