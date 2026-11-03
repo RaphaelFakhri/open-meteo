@@ -1,6 +1,6 @@
 import Foundation
 
-/// Cache hits stay lock-free. Misses share a download and its priority across overlapping ranges.
+/// Cache hits stay lock-free. Misses share a download across overlapping ranges.
 public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
     typealias Key = UInt64
     public nonisolated let cache: AtomicBlockCache<Backend>
@@ -8,14 +8,12 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
     private final class Fetch {
         let key: Key
         let count: Int
-        let job: RemoteDownloadJob
         var task: Task<Void, Never>?
         var waiters: [UUID: CheckedContinuation<Data, Error>] = [:]
         var result: Result<Data, Error>?
-        init(key: Key, count: Int, priority: RemoteReadPriority) {
+        init(key: Key, count: Int) {
             self.key = key
             self.count = count
-            self.job = RemoteDownloadJob(priority: priority)
         }
     }
     private var pending: [Key: Fetch] = [:]
@@ -27,7 +25,6 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
     nonisolated func get<T: ContiguousBytes & Sendable>(
         key keyStart: Key,
         count: Int,
-        priority: RemoteReadPriority = .foreground,
         provider: @escaping @Sendable (_ key: Key, _ count: Int) async throws -> T,
         dataCallback: @Sendable (Key, UnsafeRawBufferPointer) -> Void
     ) async throws {
@@ -35,7 +32,7 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
             try Task.checkCancellation()
             let key = keyStart &+ UInt64(i)
             guard let value = cache.get(key: key, count: 1) else {
-                try await getIsolated(key: key, count: count - i, priority: priority, provider: provider, dataCallback: dataCallback)
+                try await getIsolated(key: key, count: count - i, provider: provider, dataCallback: dataCallback)
                 return
             }
             dataCallback(key, value)
@@ -45,12 +42,12 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
     private func getIsolated<T: ContiguousBytes & Sendable>(
         key keyStart: Key,
         count: Int,
-        priority: RemoteReadPriority,
         provider: @escaping @Sendable (Key, Int) async throws -> T,
         dataCallback: @Sendable (Key, UnsafeRawBufferPointer) -> Void
     ) async throws {
         var i = 0
         while i < count {
+            try RemotePreloadSession.current?.checkActive()
             try Task.checkCancellation()
             let key = keyStart &+ UInt64(i)
             if let value = cache.get(key: key, count: 1) {
@@ -68,15 +65,13 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
                     if pending[next] != nil || cache.get(key: next, count: 1) != nil { break }
                     length += 1
                 }
-                fetch = Fetch(key: key, count: length, priority: priority)
+                fetch = Fetch(key: key, count: length)
                 for offset in 0..<length { pending[key &+ UInt64(offset)] = fetch }
                 // The download belongs to all waiters, not to the task that first missed the cache.
                 fetch.task = Task {
                     let result: Result<Data, Error>
                     do {
-                        let bytes = try await RemoteDownloadJob.$current.withValue(fetch.job) {
-                            try await provider(key, length)
-                        }
+                        let bytes = try await provider(key, length)
                         let data = bytes.withUnsafeBytes { Data($0) }
                         guard data.count > (length - 1) * self.cache.blockSize, data.count <= length * self.cache.blockSize else {
                             throw CurlErrorNonRetry.chunkSizeMismatch
@@ -97,10 +92,6 @@ public final actor AtomicCacheCoordinator<Backend: AtomicBlockCacheStorable> {
                         continuation.resume(with: result)
                     } else {
                         fetch.waiters[waiter] = continuation
-                        if priority == .foreground {
-                            let job = fetch.job
-                            Task { await job.promote() }
-                        }
                     }
                 }
             } onCancel: {

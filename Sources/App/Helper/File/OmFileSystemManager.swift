@@ -42,8 +42,7 @@ final class OmFileSystemManager: Sendable {
             OmFileSystemS3(server: S3ServerHealth(
                 logger: .init(label: "RemoteData"),
                 servers: $0,
-                downloadLimit: RemoteDataHttpClientLifecycle.positiveLimit("REMOTE_DATA_DOWNLOADS", default: 32),
-                backgroundDownloadLimit: RemoteDataHttpClientLifecycle.positiveLimit("REMOTE_DATA_BACKGROUND_DOWNLOADS", default: 4)
+                preloadExecutor: ReaderPrefetchPolicy.executor
             ))
         }
     }
@@ -104,6 +103,7 @@ final class OmFileSystemManager: Sendable {
     }
     
     func with<R, Key: OmFileManagable>(file: Key, fn: (_ value: Key.Payload) async throws -> R) async throws -> R? {
+        try RemotePreloadSession.current?.checkActive()
         let path = file.getRelativeFilePathWithData()
         assert(path.hasPrefix("/") == false)
         if let object = await localFileSystem.getFile(fullPath: path) {
@@ -156,6 +156,7 @@ extension OmFileSystemManager {
     /// Resolve the variable directory once and retain its copy-on-write file indexes.
     /// Returns nil when neither an accessible local nor remote directory exists.
     func getSeriesDirectory(domain: DomainRegistry, variable: String, ensembleMember: Int, previousDay: Int) async throws -> SeriesDirectory? {
+        try RemotePreloadSession.current?.checkActive()
         // The common case reuses the variable string without allocating a path.
         var name = variable
         if previousDay > 0 {
@@ -236,6 +237,7 @@ extension OmFileSystemManager {
         case remote(OmFileSystemS3.FileWithContext)
         
         func with<R, Key: OmFileManagable>(payloadType: Key.Type, fn: (_ value: Key.Payload) async throws -> R) async throws -> R? {
+            try RemotePreloadSession.current?.checkActive()
             switch self {
             case .local(let file):
                 return try await fn(file.getPayload(ofType: Key.Payload.self))

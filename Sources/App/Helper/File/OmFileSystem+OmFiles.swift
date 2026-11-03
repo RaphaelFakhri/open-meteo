@@ -5,7 +5,7 @@ import Logging
 import OmFileIO
 
 struct OmFileLocalRemoteOmReader {
-    private var warmup: (RemoteCacheWarmer, UUID)? = nil
+    private var warmup: (RemotePreloadExecutor, UUID)? = nil
     let reader: any OmFileReaderArrayProtocol<Float>
     let timestamps: [Timestamp]?
     let timeRangeDt: TimerangeDt?
@@ -44,16 +44,17 @@ extension OmFileLocalRemoteOmReader: OmFilePayload {
         let logger = reader.fn.backend.server.logger
         let activeBlocks = reader.fn.listOfActiveBlocks(maxAgeSeconds: 15*60, scaledToFileSize: file.count)
         
-        await file.backend.server.cacheWarmer.cancel(key: file.backend.object)
+        await file.backend.server.preloadExecutor.cancel(key: file.backend.object)
         var updated = try await OmFileLocalRemoteOmReader(remoteFile: file)
-        let warmer = file.backend.server.cacheWarmer
-        let id = await warmer.stage(key: file.backend.object) {
+        let warmer = file.backend.server.preloadExecutor
+        let id = await warmer.stage(key: file.backend.object, jobs: file.preloadChunks(blocks: activeBlocks)) { blocks in
             do {
                 // Old block positions are only a hint; changes to compression can move data.
-                try await file.preloadBlocks(blocks: activeBlocks, priority: .background)
+                try await file.preloadBlocks(blocks: [blocks])
             } catch is CancellationError {
                 return
             } catch {
+                RemotePreloadSession.current?.stop()
                 logger.debug("Cache warming stopped for \(file.backend.object): \(error)")
             }
         }
@@ -71,7 +72,7 @@ extension OmFileLocalRemoteOmReader: OmFilePayload {
         guard let reader = self.reader as? OmFileReaderArray<OmReaderBlockCache<OmHttpReaderBackend, MmapFile>, Float> else {
             fatalError("remoteDeleted cannot be called on a non-OmFileRemoteOmReader")
         }
-        await reader.fn.backend.server.cacheWarmer.cancel(key: reader.fn.backend.object)
+        await reader.fn.backend.server.preloadExecutor.cancel(key: reader.fn.backend.object)
         let logger = reader.fn.backend.server.logger
         let deletedBlocks = reader.fn.deleteCachedBlocks(olderThanSeconds: 60)
         logger.warning("OmFileRemoteOmReader: File deleted from server. \(deletedBlocks) previously cached blocks have been deleted.")

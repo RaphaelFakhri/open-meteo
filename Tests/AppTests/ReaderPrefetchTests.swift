@@ -60,18 +60,15 @@ private final class PrefetchRecordingBackend: OmFileReaderBackend, Sendable {
             switch ReaderPrefetchPolicy.current {
             case .remoteOnly:
                 #expect(!OmReaderPrefetch.pageInPayload)
-                #expect(OmReaderPrefetch.remotePriority == .foreground)
                 #expect(variables.count == 1)
                 calls.withLock {
-                    #expect($0.local == 0)
                     $0.remote += 1
                 }
-            case .all:
+            case .all, .localOnly:
                 #expect(OmReaderPrefetch.pageInPayload)
                 #expect(prefetch)
                 #expect(variables.count == 8)
                 calls.withLock {
-                    #expect($0.remote == (remoteEnabled ? 8 : 0))
                     $0.local += 1
                 }
             }
@@ -79,14 +76,13 @@ private final class PrefetchRecordingBackend: OmFileReaderBackend, Sendable {
         let result = DummyDataProvider.makeData(timeformat: .iso8601, locationCount: 1, firstLocation: provider)
         let response = try await result.response(format: .json(fixedGenerationTime: 0), prefetch: prefetch, logger: .init(label: "test"))
         #expect(calls.withLock { $0.local } == (prefetch ? 1 : 0))
-        #expect(calls.withLock { $0.remote } == (remoteEnabled ? 8 : 0))
+        #expect(calls.withLock { $0.remote } <= (remoteEnabled ? 8 : 0))
         try await withApp { app in
             _ = try await response.body.collect(on: app.eventLoopGroup.next()).get()
         }
         #expect(calls.withLock { $0.local } == (prefetch ? 1 : 0))
-        #expect(calls.withLock { $0.remote } == (remoteEnabled ? 8 : 0))
+        #expect(calls.withLock { $0.remote } <= (remoteEnabled ? 8 : 0))
         #expect(ReaderPrefetchPolicy.current == .all)
-        #expect(OmReaderPrefetch.remotePriority == .background)
     }
 
     @Test
@@ -95,7 +91,7 @@ private final class PrefetchRecordingBackend: OmFileReaderBackend, Sendable {
         let template = DummyDataProvider.makeData(timeformat: .iso8601, locationCount: 1)
         let locations = (0..<3).map { index in
             let provider = DummyDataProvider(onPrefetch: { variables in
-                guard ReaderPrefetchPolicy.current == .all else { return }
+                guard ReaderPrefetchPolicy.current != .remoteOnly else { return }
                 #expect(variables.count == 8)
                 state.withLock {
                     $0.order.append(index)

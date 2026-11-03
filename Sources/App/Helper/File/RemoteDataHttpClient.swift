@@ -13,7 +13,7 @@ struct RemoteDataHttpClientLifecycle: LifecycleHandler {
 
     func shutdownAsync(_ application: Application) async {
         if OmFileSystemManager.isInitialized {
-            await OmFileSystemManager.instance.remoteFileSystem?.server.cacheWarmer.shutdown()
+            await OmFileSystemManager.instance.remoteFileSystem?.server.preloadExecutor.shutdown()
             await OmFileSystemManager.instance.remoteFileSystem?.server.stopMonitoring()
         }
         do {
