@@ -3,10 +3,10 @@ import Synchronization
 
 /// Stops future preload I/O without cancelling a download already in progress.
 public final class RemotePreloadSession: Sendable {
-    private let stopped = Mutex(false)
+    private let stopped = Atomic(false)
     public init() {}
-    public var isStopped: Bool { stopped.withLock { $0 } }
-    public func stop() { stopped.withLock { $0 = true } }
+    public var isStopped: Bool { stopped.load(ordering: .relaxed) }
+    public func stop() { stopped.store(true, ordering: .relaxed) }
     public func checkActive() throws {
         if isStopped { throw CancellationError() }
     }
