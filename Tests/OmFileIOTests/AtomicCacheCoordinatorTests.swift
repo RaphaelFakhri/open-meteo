@@ -27,7 +27,15 @@ private func eventually(_ condition: () async -> Bool) async throws {
 }
 
 private final class PrefetchRecordingStorage: AtomicBlockCacheStorable {
-    let storage = DataAsClass(data: Data(count: (64 + 16) * 16))
+    let storage: MmapFile
+
+    init() throws {
+        // Cache operations need stable shared memory, not concurrently mutated Data storage.
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        let file = try FileHandle.createNewFile(file: path, size: (64 + 16) * 16, overwrite: true)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        storage = try MmapFile(fn: file, mode: .readWrite)
+    }
     let ranges = Mutex<[Range<Int>]>([])
     var count: Int { storage.count }
     func withMutableUnsafeBytes<R>(_ body: (UnsafeMutableRawBufferPointer) throws -> R) rethrows -> R {
@@ -41,7 +49,7 @@ private final class PrefetchRecordingStorage: AtomicBlockCacheStorable {
 @Suite struct AtomicCacheCoordinatorTests {
     @Test(.timeLimit(.minutes(1)))
     func abandonedDownloadCanBeRetried() async throws {
-        let coordinator = AtomicCacheCoordinator(cache: AtomicBlockCache(data: PrefetchRecordingStorage(), blockSize: 64))
+        let coordinator = AtomicCacheCoordinator(cache: AtomicBlockCache(data: try PrefetchRecordingStorage(), blockSize: 64))
         let started = Mutex(false)
         let reader = Task {
             try await coordinator.get(key: 1, count: 1, provider: { _, _ in
@@ -65,7 +73,7 @@ private final class PrefetchRecordingStorage: AtomicBlockCacheStorable {
 
     @Test
     func failedDownloadCanBeRetried() async throws {
-        let coordinator = AtomicCacheCoordinator(cache: AtomicBlockCache(data: PrefetchRecordingStorage(), blockSize: 64))
+        let coordinator = AtomicCacheCoordinator(cache: AtomicBlockCache(data: try PrefetchRecordingStorage(), blockSize: 64))
         do {
             try await coordinator.get(key: 1, count: 2, provider: { _, _ -> Data in
                 throw CurlErrorNonRetry.fileModifiedOrPrevalidationFailed
@@ -85,7 +93,7 @@ private final class PrefetchRecordingStorage: AtomicBlockCacheStorable {
 
     @Test(.timeLimit(.minutes(1)))
     func demandBypassesPendingPreloadsAndSharesActiveDownload() async throws {
-        let cache = AtomicBlockCache(data: PrefetchRecordingStorage(), blockSize: 64)
+        let cache = AtomicBlockCache(data: try PrefetchRecordingStorage(), blockSize: 64)
         let coordinator = AtomicCacheCoordinator(cache: cache)
         let executor = RemotePreloadExecutor(concurrency: 1)
         let gate = DownloadGate()
@@ -128,7 +136,7 @@ private final class PrefetchRecordingStorage: AtomicBlockCacheStorable {
     }
 
     @Test func awaitedPrefetchCompletesDownloadsAndPagesPayloads() async throws {
-        let storage = PrefetchRecordingStorage()
+        let storage = try PrefetchRecordingStorage()
         let cache = AtomicBlockCache(data: storage, blockSize: 64)
         let reader = OmReaderBlockCache(backend: DataAsClass(data: Data(repeating: 7, count: 128)), cache: AtomicCacheCoordinator(cache: cache), cacheKey: 123)
         try await OmReaderPrefetch.$waitForCompletion.withValue(true) {
@@ -168,7 +176,7 @@ private final class PrefetchRecordingStorage: AtomicBlockCacheStorable {
     }
 
     @Test func prefetchMissUsesCacheStorageOffsets() async throws {
-        let storage = PrefetchRecordingStorage()
+        let storage = try PrefetchRecordingStorage()
         let cache = AtomicBlockCache(data: storage, blockSize: 64)
         let reader = OmReaderBlockCache(backend: DataAsClass(data: Data(repeating: 7, count: 128)), cache: AtomicCacheCoordinator(cache: cache), cacheKey: 123)
         try await reader.prefetchData(offset: 0, count: 128)
