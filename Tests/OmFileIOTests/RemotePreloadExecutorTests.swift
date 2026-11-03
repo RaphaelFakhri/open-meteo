@@ -37,7 +37,7 @@ private func waitForPreload(_ condition: () -> Bool) async throws {
         }
         #expect(await executor.snapshot.activeWarmups == 0)
         await executor.activate(warming)
-        let request = Task {
+        let request = Task { @Sendable in
             try await waitForPreload { log.withLock { $0 == ["warm0"] } }
             try await executor.run(count: 1, concurrency: 1) { _ in
                 log.withLock { $0.append("request") }
@@ -118,7 +118,7 @@ private func waitForPreload(_ condition: () -> Bool) async throws {
         let gate = PreloadGate()
         let state = Mutex((active: 0, maximum: 0, calls: Set<Int>()))
         let tasks = (0..<2).map { call in
-            Task {
+            Task { @Sendable in
                 try await executor.run(count: 20, concurrency: 1) { _ in
                     state.withLock {
                         $0.active += 1
@@ -149,7 +149,7 @@ private func waitForPreload(_ condition: () -> Bool) async throws {
         let executor = RemotePreloadExecutor(concurrency: 1)
         let gate = PreloadGate()
         let state = Mutex((started: 0, finished: false, nextStarted: false, stopped: false))
-        let first = Task {
+        let first = Task { @Sendable in
             try await executor.run(count: 100, concurrency: 4) { _ in
                 state.withLock { $0.started += 1 }
                 await gate.wait()
@@ -162,7 +162,7 @@ private func waitForPreload(_ condition: () -> Bool) async throws {
         do {
             try await waitForPreload { state.withLock { $0.started == 1 } }
             first.cancel()
-            let second = Task {
+            let second = Task { @Sendable in
                 try await executor.run(count: 1, concurrency: 1) { _ in
                     state.withLock {
                         #expect($0.finished)
@@ -190,7 +190,7 @@ private func waitForPreload(_ condition: () -> Bool) async throws {
         let executor = RemotePreloadExecutor(concurrency: 8)
         let gate = PreloadGate()
         let state = Mutex((active: 0, maximum: 0, finished: 0))
-        let request = Task {
+        let request = Task { @Sendable in
             try await executor.run(count: 30, concurrency: 2) { index in
                 state.withLock { $0.active += 1; $0.maximum = max($0.maximum, $0.active) }
                 if index == 0 { await gate.wait() }
